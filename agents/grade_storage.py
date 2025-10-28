@@ -17,12 +17,28 @@ import sys
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from database.supabase_client import get_supabase_client
-from database.supabase_models import SupabaseGradeStorage, GradeRecord
+from services.firebaseservice import FirebaseService
+from services.devdockservice import DevDockService
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
-# GradeRecord is now imported from supabase_models
+@dataclass
+class GradeRecord:
+    student_id: str
+    exam_id: str
+    question_id: str
+    answer_text: str
+    score: float
+    max_score: float
+    percentage: float
+    feedback: str
+    timestamp: str
+    previous_hash: str
+    current_hash: str
+    metadata: dict
+    is_override: bool = False
+    override_reason: str | None = None
 
 class GradeStorageAgent:
     """Agent responsible for secure grade storage and verification"""
@@ -38,56 +54,21 @@ class GradeStorageAgent:
         self.storage_dir = Path(storage_dir)
         self.storage_dir.mkdir(parents=True, exist_ok=True)
         
-        # Initialize Supabase client
-        self.supabase_client = get_supabase_client()
-        self.storage = SupabaseGradeStorage(self.supabase_client)
+        # Initialize Firebase and DevDock
+        self.firebase = FirebaseService()
+        self.devdock = DevDockService()
         
         # Chain of grade records for verification
         self.grade_chain = []
         self._load_existing_chain()
     
     def _init_database(self):
-        """Initialize Supabase database - tables should be created via SQL schema"""
-        try:
-            # Test connection
-            self.supabase_client.client.table('grades').select('id').limit(1).execute()
-            logger.info("Supabase database connection successful")
-            
-        except Exception as e:
-            logger.error(f"Failed to connect to Supabase database: {e}")
-            raise
+        """No-op: using Firebase as the primary store."""
+        return
     
     def _load_existing_chain(self):
-        """Load existing grade records to maintain chain integrity"""
-        try:
-            # Get all grades from Supabase
-            result = self.supabase_client.client.table('grades').select('*').order('created_at', desc=False).execute()
-            grades_data = result.data or []
-            
-            for grade_data in grades_data:
-                grade_record = GradeRecord(
-                    student_id=grade_data['student_id'],
-                    exam_id=grade_data['exam_id'],
-                    question_id=grade_data['question_id'],
-                    answer_text=grade_data['answer_text'],
-                    score=grade_data['score'],
-                    max_score=grade_data['max_score'],
-                    percentage=grade_data['percentage'],
-                    feedback=grade_data['feedback'],
-                    timestamp=grade_data['timestamp'],
-                    previous_hash=grade_data['previous_hash'],
-                    current_hash=grade_data['current_hash'],
-                    metadata=grade_data.get('metadata', {}),
-                    is_override=grade_data.get('is_override', False),
-                    override_reason=grade_data.get('override_reason')
-                )
-                self.grade_chain.append(grade_record)
-            
-            logger.info(f"Loaded {len(self.grade_chain)} existing grade records")
-            
-        except Exception as e:
-            logger.warning(f"Failed to load existing chain: {e}")
-            self.grade_chain = []
+        """Start with an empty chain; Firebase is the source of truth."""
+        self.grade_chain = []
     
     def store_grade(self, 
                    student_id: str,
@@ -133,7 +114,7 @@ class GradeStorageAgent:
             # Create timestamp
             timestamp = datetime.now(timezone.utc).isoformat()
             
-            # Create grade data for Supabase
+            # Create grade data document
             grade_data = {
                 'student_id': student_id,
                 'exam_id': exam_id,
@@ -148,8 +129,47 @@ class GradeStorageAgent:
                 'metadata': metadata
             }
             
-            # Store using Supabase storage
-            grade_record = self.storage.store_grade(grade_data)
+            # Compute current hash and build record
+            temp = GradeRecord(
+                student_id=student_id,
+                exam_id=exam_id,
+                question_id=question_id,
+                answer_text=answer_text,
+                score=score,
+                max_score=max_score,
+                percentage=percentage,
+                feedback=feedback,
+                timestamp=timestamp,
+                previous_hash=previous_hash,
+                current_hash="",
+                metadata=metadata
+            )
+            current_hash = self._calculate_hash(temp)
+            grade_record = GradeRecord(
+                student_id=student_id,
+                exam_id=exam_id,
+                question_id=question_id,
+                answer_text=answer_text,
+                score=score,
+                max_score=max_score,
+                percentage=percentage,
+                feedback=feedback,
+                timestamp=timestamp,
+                previous_hash=previous_hash,
+                current_hash=current_hash,
+                metadata=metadata
+            )
+
+            # Store in Firebase (system of record)
+            try:
+                self.firebase.store_grade({ **grade_data, 'current_hash': current_hash })
+            except Exception as fe:
+                logger.warning(f"Firebase store failed: {fe}")
+            # Persist hash to DevDock (stub)
+            try:
+                self.devdock.verify_credential({'grade_hash': current_hash, 'student_id': student_id, 'exam_id': exam_id, 'question_id': question_id})
+            except Exception as de:
+                logger.warning(f"DevDock persist failed: {de}")
             
             # Add to chain
             self.grade_chain.append(grade_record)
@@ -184,13 +204,8 @@ class GradeStorageAgent:
         return hash_object.hexdigest()
     
     def _store_in_database(self, grade_record: GradeRecord):
-        """Store grade record in Supabase database"""
-        try:
-            # This is now handled by the Supabase storage class
-            pass
-        except Exception as e:
-            logger.error(f"Failed to store in database: {e}")
-            raise
+        """No-op: Firebase is used for storage."""
+        return
     
     def _save_to_file(self, grade_record: GradeRecord):
         """Save grade record to file system for backup"""
@@ -277,7 +292,26 @@ class GradeStorageAgent:
             List of grade records
         """
         try:
-            return self.storage.get_student_grades(student_id, exam_id)
+            docs = self.firebase.get_grades_by_student(student_id, exam_id)
+            records = []
+            for d in docs:
+                records.append(GradeRecord(
+                    student_id=d['student_id'],
+                    exam_id=d['exam_id'],
+                    question_id=d['question_id'],
+                    answer_text=d.get('answer_text', ''),
+                    score=d['score'],
+                    max_score=d['max_score'],
+                    percentage=d['percentage'],
+                    feedback=d['feedback'],
+                    timestamp=d['timestamp'],
+                    previous_hash=d.get('previous_hash', ''),
+                    current_hash=d.get('current_hash', ''),
+                    metadata=d.get('metadata', {}),
+                    is_override=d.get('is_override', False),
+                    override_reason=d.get('override_reason')
+                ))
+            return records
         except Exception as e:
             logger.error(f"Failed to retrieve student grades: {e}")
             return []
@@ -293,7 +327,46 @@ class GradeStorageAgent:
             Dictionary with exam analytics
         """
         try:
-            return self.storage.get_exam_analytics(exam_id)
+            grades = self.firebase.get_grades_by_exam(exam_id)
+            if not grades:
+                return {
+                    'exam_id': exam_id,
+                    'total_answers': 0,
+                    'unique_students': 0,
+                    'average_percentage': 0,
+                    'min_percentage': 0,
+                    'max_percentage': 0,
+                    'grade_distribution': {}
+                }
+            total_answers = len(grades)
+            unique_students = len(set(g['student_id'] for g in grades))
+            percentages = [g['percentage'] for g in grades if 'percentage' in g]
+            average_percentage = sum(percentages) / len(percentages) if percentages else 0
+            min_percentage = min(percentages) if percentages else 0
+            max_percentage = max(percentages) if percentages else 0
+            dist = {}
+            for g in grades:
+                p = g.get('percentage', 0)
+                if p >= 90:
+                    letter = 'A'
+                elif p >= 80:
+                    letter = 'B'
+                elif p >= 70:
+                    letter = 'C'
+                elif p >= 60:
+                    letter = 'D'
+                else:
+                    letter = 'F'
+                dist[letter] = dist.get(letter, 0) + 1
+            return {
+                'exam_id': exam_id,
+                'total_answers': total_answers,
+                'unique_students': unique_students,
+                'average_percentage': round(average_percentage, 2),
+                'min_percentage': round(min_percentage, 2),
+                'max_percentage': round(max_percentage, 2),
+                'grade_distribution': dist
+            }
         except Exception as e:
             logger.error(f"Failed to get exam analytics: {e}")
             return {}
@@ -301,7 +374,14 @@ class GradeStorageAgent:
     def export_grades(self, output_path: str, exam_id: str = None):
         """Export grades to JSON file"""
         try:
-            self.storage.export_grades(output_path, exam_id)
+            if exam_id:
+                grades = self.firebase.get_grades_by_exam(exam_id)
+            else:
+                grades = []
+                for ex in self.firebase.list_exam_ids():
+                    grades.extend(self.firebase.get_grades_by_exam(ex))
+            with open(output_path, 'w', encoding='utf-8') as f:
+                json.dump(grades, f, indent=2, ensure_ascii=False)
             logger.info(f"Grades exported to {output_path}")
         except Exception as e:
             logger.error(f"Failed to export grades: {e}")
