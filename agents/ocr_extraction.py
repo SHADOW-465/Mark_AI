@@ -92,9 +92,32 @@ class OCRExtractionAgent:
             except Exception as e:
                 logger.warning(f"Failed to initialize EasyOCR: {e}")
         
-        # Initialize DeepSeek-OCR stub detection (placeholder)
-        # In real implementation, set self.deepseek_available and client
-        self.deepseek_available = True
+        # Initialize DeepSeek-OCR via vLLM if available
+        try:
+            from vllm import LLM
+            from vllm.model_executor.models.deepseek_ocr import NGramPerReqLogitsProcessor
+            self._deepseek_logits_processors = [NGramPerReqLogitsProcessor]
+            # Lazy model load; defer heavy init until first call
+            self._deepseek_llm = None
+            self._deepseek_model_name = os.getenv('DEEPSEEK_OCR_MODEL', 'deepseek-ai/DeepSeek-OCR')
+            self.deepseek_available = True
+            logger.info("DeepSeek-OCR available via vLLM")
+        except Exception as e:
+            self.deepseek_available = False
+            self._deepseek_llm = None
+            logger.warning(f"DeepSeek-OCR not available: {e}")
+
+        # Initialize DeepSeek-OCR transformers fallback (no GPU/vLLM)
+        self.deepseek_transformers_available = False
+        self._deepseek_tok = None
+        self._deepseek_tf_model = None
+        try:
+            import transformers  # noqa: F401
+            import torch  # noqa: F401
+            self.deepseek_transformers_available = True
+            logger.info("DeepSeek-OCR transformers fallback available")
+        except Exception as e:
+            logger.warning(f"Transformers fallback not available: {e}")
         
         # Initialize Gemini Vision stub (placeholder)
         self.gemini_vision_available = True
@@ -175,8 +198,8 @@ class OCRExtractionAgent:
                 logger.warning(f"EasyOCR extraction failed: {e}")
                 results['easyocr'] = {'text': '', 'confidence': 0.0, 'error': str(e)}
         
-        # DeepSeek-OCR (stub)
-        if self.deepseek_available:
+        # DeepSeek-OCR (vLLM or transformers fallback)
+        if self.deepseek_available or self.deepseek_transformers_available:
             try:
                 deepseek_result = self._extract_with_deepseek(image)
                 results['deepseek'] = deepseek_result
@@ -386,13 +409,115 @@ class OCRExtractionAgent:
             return image
 
     def _extract_with_deepseek(self, image: Image.Image) -> Dict:
-        """DeepSeek-OCR placeholder returning empty or heuristic text."""
-        # Placeholder: return empty with low confidence
+        """DeepSeek-OCR extraction: prefer vLLM, fallback to transformers if vLLM/GPU unavailable."""
+        # Prefer vLLM if available
+        if self.deepseek_available:
+            try:
+                from vllm import LLM, SamplingParams
+                if self._deepseek_llm is None:
+                    self._deepseek_llm = LLM(
+                        model=self._deepseek_model_name,
+                        enable_prefix_caching=False,
+                        mm_processor_cache_gb=0,
+                        logits_processors=self._deepseek_logits_processors
+                    )
+                prompt = "<image>\nFree OCR."
+                pil_image = image.convert("RGB")
+                model_input = [{
+                    'prompt': prompt,
+                    'multi_modal_data': {'image': pil_image}
+                }]
+                sampling_param = SamplingParams(
+                    temperature=0.0,
+                    max_tokens=8192,
+                    extra_args=dict(
+                        ngram_size=30,
+                        window_size=90,
+                        whitelist_token_ids={128821, 128822},
+                    ),
+                    skip_special_tokens=False,
+                )
+                outputs = self._deepseek_llm.generate(model_input, sampling_param)
+                text = outputs[0].outputs[0].text if outputs and outputs[0].outputs else ''
+                language = self._detect_language(text)
+                confidence = 0.85 if text.strip() else 0.0
+                return {
+                    'text': text.strip(),
+                    'confidence': confidence,
+                    'language': language,
+                    'method': 'deepseek'
+                }
+            except Exception as e:
+                logger.warning(f"DeepSeek vLLM path failed, trying transformers fallback: {e}")
+
+        # Transformers fallback
+        if not self.deepseek_transformers_available:
+            raise RuntimeError("DeepSeek transformers fallback not available")
+
+        import torch
+        from transformers import AutoModel, AutoTokenizer
+        if self._deepseek_tok is None or self._deepseek_tf_model is None:
+            model_name = os.getenv('DEEPSEEK_OCR_MODEL', 'deepseek-ai/DeepSeek-OCR')
+            self._deepseek_tok = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+            use_cuda = torch.cuda.is_available()
+            attn_impl = 'flash_attention_2' if use_cuda else None
+            if attn_impl:
+                self._deepseek_tf_model = AutoModel.from_pretrained(
+                    model_name,
+                    _attn_implementation=attn_impl,
+                    trust_remote_code=True,
+                    use_safetensors=True
+                )
+            else:
+                self._deepseek_tf_model = AutoModel.from_pretrained(
+                    model_name,
+                    trust_remote_code=True,
+                    use_safetensors=True
+                )
+            self._deepseek_tf_model = self._deepseek_tf_model.eval()
+            if use_cuda:
+                self._deepseek_tf_model = self._deepseek_tf_model.cuda().to(torch.bfloat16)
+
+        # Save PIL image to a temporary file because infer expects a path
+        import tempfile
+        import uuid
+        tmp_dir = tempfile.gettempdir()
+        tmp_path = os.path.join(tmp_dir, f"deepseek_{uuid.uuid4().hex}.jpg")
+        image.convert("RGB").save(tmp_path)
+
+        prompt = os.getenv('DEEPSEEK_PROMPT', '<image>\nFree OCR.')
+        try:
+            res = self._deepseek_tf_model.infer(
+                self._deepseek_tok,
+                prompt=prompt,
+                image_file=tmp_path,
+                output_path=tmp_dir,
+                base_size=1024,
+                image_size=640,
+                crop_mode=True,
+                save_results=False,
+                test_compress=True
+            )
+            # infer may save outputs; here we rely on returned result text if available
+            text = ''
+            if isinstance(res, dict) and 'text' in res:
+                text = res['text']
+        except Exception as e:
+            logger.warning(f"DeepSeek transformers infer failed: {e}")
+            text = ''
+        finally:
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+
+        language = self._detect_language(text)
+        confidence = 0.8 if text and text.strip() else 0.0
         return {
-            'text': '',
-            'confidence': 0.0,
-            'language': 'unknown',
-            'method': 'deepseek'
+            'text': (text or '').strip(),
+            'confidence': confidence,
+            'language': language,
+            'method': 'deepseek-transformers'
         }
 
     def _extract_with_gemini_vision(self, image: Image.Image) -> Dict:
