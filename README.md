@@ -104,10 +104,66 @@ streamlit run dashboard/streamlit_app.py
 
 ### Docker Setup
 
-```bash
-# Build and run with Docker Compose
-docker-compose up --build
-```
+This project is fully containerized using Docker and Docker Compose, allowing for a consistent and isolated development environment.
+
+#### Prerequisites
+
+- **Docker Desktop**: Install Docker Desktop for your operating system (Windows, macOS, or Linux). You can download it from the [official Docker website](https://www.docker.com/products/docker-desktop/).
+
+#### Initial Setup
+
+1.  **Clone the Repository**:
+    ```bash
+    git clone <repository-url>
+    cd Edugrade-AI
+    ```
+
+2.  **Service Account Key**:
+    - Place your `serviceAccountKey.json` file in the `config/` directory.
+    - **Important**: This file is included in the `.gitignore` to prevent it from being committed to your repository.
+
+3.  **Environment Variables**:
+    - Create a `.env` file by copying the example:
+      ```bash
+      cp env.example .env
+      ```
+    - Open the `.env` file and fill in your API keys and other configuration details.
+    - Set the `GOOGLE_APPLICATION_CREDENTIALS` variable to point to your service account key:
+      ```
+      GOOGLE_APPLICATION_CREDENTIALS=/app/config/serviceAccountKey.json
+      ```
+
+#### Running the Application with Docker
+
+1.  **Build and Run the Containers**:
+    ```bash
+    docker-compose up --build
+    ```
+    This command will:
+    - Build the Docker images for the API and dashboard services.
+    - Start all the services defined in the `docker-compose.yml` file.
+    - Mount the necessary volumes for data persistence.
+
+2.  **Accessing the Services**:
+    - **API**: The FastAPI backend will be available at `http://localhost:8000`.
+    - **Streamlit Dashboard**: The Streamlit dashboard will be running at `http://localhost:8501`.
+    - **Gradio Dashboard**: The Gradio dashboard will be accessible at `http://localhost:7860`.
+
+3.  **Stopping the Application**:
+    - To stop the running containers, press `Ctrl + C` in the terminal where `docker-compose` is running.
+    - To remove the containers and associated volumes, you can run:
+      ```bash
+      docker-compose down -v
+      ```
+
+#### Production Environment
+
+For a production deployment, it is recommended to:
+
+-   Use a managed database service instead of running a database in a container.
+-   Store the `serviceAccountKey.json` file securely, for example, using a secret management tool like HashiCorp Vault or AWS Secrets Manager.
+-   Configure the `docker-compose.yml` file with appropriate resource limits and restart policies.
+-   Use a reverse proxy like Nginx or Traefik to manage incoming traffic and provide SSL termination.
 
 ## Running Locally (Dev)
 
@@ -295,7 +351,7 @@ pytest --cov=agents --cov=api --cov=dashboard
 ## Troubleshooting
 
 - vLLM/DeepSeek model fails to load:
-  - Check GPU availability and CUDA drivers; verify PyTorch + vLLM compatibility.
+  - Check GPU availability and CUDA drivers; verify PyTorch + vllm compatibility.
   - Reduce memory use (disable large caches) or switch to a smaller model if supported.
 - Firebase writes are skipped:
   - Ensure `FIREBASE_CREDENTIALS_PATH` points to a valid JSON; check IAM permissions for Firestore.
