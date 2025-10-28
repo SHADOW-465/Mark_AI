@@ -138,6 +138,14 @@ streamlit run dashboard/streamlit_app.py
 - Swagger UI: http://localhost:8000/docs
 - ReDoc: http://localhost:8000/redoc
 
+### End-to-End Quick Start
+
+1) Create an exam via `POST /exams/`.
+2) Upload a student sheet with the matching template via `POST /submissions/`.
+3) Poll `GET /submissions/{id}/grades` until status is `completed`.
+4) Fetch aligned image and transforms if needed.
+5) View analytics with `GET /analytics/{exam_id}`. Use `PUT /grades/{grade_id}/override` for teacher overrides.
+
 ## API Endpoints (v1)
 
 - `POST /exams/` - Create exam (answer key/rubric association optional)
@@ -242,6 +250,33 @@ Edit `config/settings.py` to configure:
 - DEVDOCK_API_KEY: Optional (stub)
 - STORAGE_DIR, UPLOAD_DIR, PROCESSED_DIR, EXPORTS_DIR: Optional paths
 
+### DeepSeek-OCR (vLLM) Setup
+
+- Requires `vllm` and typically a CUDA-capable GPU for best performance.
+- Environment variables:
+  - `DEEPSEEK_OCR_MODEL` (default: `deepseek-ai/DeepSeek-OCR`)
+- Notes:
+  - Ensure compatible CUDA/PyTorch drivers are installed.
+  - If running on CPU-only, performance may be slow or unsupported depending on your environment.
+
+### Firebase Setup (Firestore)
+
+- Install `firebase-admin` (already in `requirements.txt`).
+- Create a Firebase service account and download the JSON credentials.
+- Set `FIREBASE_CREDENTIALS_PATH` in `.env` to the JSON file path.
+- This app writes grade documents to the `grades` collection and alignment metadata to the `alignments` collection (best-effort; Supabase remains the system of record).
+
+### Supabase Setup (System of Record)
+
+- Provide `SUPABASE_URL` and `SUPABASE_KEY` in `.env`.
+- Ensure the following tables exist (basic columns as per `database/models.py` and storage layer): `grades`, `students`, `exams`, `processing_jobs`, `rubrics`.
+- The app will read/write grades and compute analytics from Supabase.
+
+### DevDock (Stub) Setup
+
+- Set `DEVDOCK_API_KEY` if available.
+- The current integration is a stub that records grade hash verification calls; replace `services/devdockservice.py` with your real SDK logic when available.
+
 ## Testing
 
 ```bash
@@ -256,6 +291,16 @@ pytest --cov=agents --cov=api --cov=dashboard
 
 - The folders `api/models` and `utils` are currently empty and not used. You can remove them safely or keep for future expansion.
 - Logs, uploads, processed outputs, and exports are written to their respective directories. Clean them periodically if `CLEANUP_OLD_FILES` is disabled.
+
+## Troubleshooting
+
+- vLLM/DeepSeek model fails to load:
+  - Check GPU availability and CUDA drivers; verify PyTorch + vLLM compatibility.
+  - Reduce memory use (disable large caches) or switch to a smaller model if supported.
+- Firebase writes are skipped:
+  - Ensure `FIREBASE_CREDENTIALS_PATH` points to a valid JSON; check IAM permissions for Firestore.
+- Supabase errors:
+  - Verify URL/key; confirm tables and RLS policies allow the operations.
 
 ## License
 
