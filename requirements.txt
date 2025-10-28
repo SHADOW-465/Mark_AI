@@ -1,0 +1,59 @@
+# Core Framework
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.5.0
+python-multipart==0.0.6
+
+# Multi-Agent Orchestration
+langgraph==0.0.40
+crewai==0.1.0
+langchain==0.1.0
+langchain-openai==0.0.2
+
+# Image Processing
+opencv-python==4.8.1.78
+ultralytics==8.0.196
+Pillow==10.1.0
+numpy==1.24.3
+scikit-image==0.21.0
+
+# OCR and Text Processing
+google-cloud-vision==3.4.4
+transformers==4.35.2
+torch==2.1.1
+torchvision==0.16.1
+easyocr==1.7.0
+pytesseract==0.3.10
+
+# AI and ML
+google-generativeai==0.3.2
+perplexity-ai==0.1.0
+sentence-transformers==2.2.2
+
+# Database
+supabase==2.3.4
+postgrest==0.13.2
+
+# Dashboard
+streamlit==1.28.1
+gradio==4.7.1
+plotly==5.17.0
+pandas==2.1.4
+
+# Utilities
+python-dotenv==1.0.0
+httpx==0.25.2
+aiofiles==23.2.1
+hashlib2==1.0.0
+cryptography==41.0.8
+python-jose[cryptography]==3.3.0
+
+# Testing
+pytest==7.4.3
+pytest-asyncio==0.21.1
+pytest-cov==4.1.0
+
+# Development
+black==23.11.0
+flake8==6.1.0
+mypy==1.7.1
