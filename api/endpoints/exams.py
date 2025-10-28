@@ -4,7 +4,7 @@ from typing import Optional, Dict, Any
 from datetime import datetime
 import logging
 
-from database.supabase_client import get_supabase_client
+from services.firebaseservice import FirebaseService
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +22,7 @@ class CreateExamRequest(BaseModel):
 @router.post("/")
 async def create_exam(payload: CreateExamRequest):
     try:
-        client = get_supabase_client()
+        fb = FirebaseService()
         exam_data = {
             'exam_id': payload.exam_id,
             'title': payload.title,
@@ -32,9 +32,8 @@ async def create_exam(payload: CreateExamRequest):
             'max_score': payload.max_score,
             'created_at': datetime.utcnow().isoformat()
         }
-        created = client.create_exam(exam_data)
-        # Optionally associate rubric by rubric_id via separate table or metadata
-        return { 'message': 'Exam created', 'exam': created }
+        fb.store_exam(exam_data)
+        return { 'message': 'Exam created', 'exam': exam_data }
     except Exception as e:
         logger.error(f"Create exam failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
